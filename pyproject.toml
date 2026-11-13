@@ -1,0 +1,25 @@
+[project]
+name = "lrr-pilot"
+version = "0.1.0"
+description = "Comprehension vs action in low-resource refusal: Qwen3 pilot (SAIR)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pandas",
+    "huggingface_hub",
+    "torch>=2.15.0",
+    "transformers>=5.23.0",
+    "scikit-learn>=1.9.1",
+    "matplotlib>=3.11.2",
+    "accelerate>=1.15.0",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["data: needs the pinned Hugging Face datasets (downloads on first run)"]

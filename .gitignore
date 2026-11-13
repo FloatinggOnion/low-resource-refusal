@@ -1,3 +1,16 @@
+# python / env
 .env
 *.pyc
 __pycache__/
+.venv/
+.pytest_cache/
+
+# PRIVATE: harmful prompts, model generations, judge labels, hand-label sheets, hidden states, and anything
+# derived row-by-row from TukaBench (CC-BY-NC 4.0). Never commit these; this repo is public.
+data/
+outputs/
+private/
+*.jsonl
+*.npy
+*.npz
+*.parquet
