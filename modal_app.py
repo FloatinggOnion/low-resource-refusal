@@ -63,6 +63,19 @@ def lm_probe(model_id: str, tag: str, cells: str = "eng,yor,yor-stripped,swh,hau
 
 
 @app.function(**common)
+def steer(model_id: str, tag: str) -> dict:
+    import os
+
+    from lrr.steer import run_steer
+
+    os.makedirs(f"/out/{tag}", exist_ok=True)
+    s = run_steer(model_id, f"/out/{tag}/generations.jsonl")
+    out_vol.commit()
+    hf_vol.commit()
+    return s
+
+
+@app.function(**common)
 def translate(model_id: str, tag: str) -> dict:
     import os
 
@@ -101,6 +114,8 @@ def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebel
     elif stage == "lm":
         s = lm_probe.remote(model, tag)
         print(json.dumps({"c3_bits_per_byte": s["c3_bits_per_byte"], "seconds": s["seconds"]}, indent=1))
+    elif stage == "steer":
+        print(json.dumps(steer.remote(model, tag), indent=1))
     elif stage == "translate":
         print(json.dumps(translate.remote(model, tag), indent=1))
     elif stage == "judge":

@@ -192,6 +192,28 @@ def fig5(diag: Path, out: Path):
     plt.close(fig)
 
 
+def fig6(diag: Path, out: Path):
+    """Pooled-token cross-lingual retrieval by relative depth (chance 0.5%)."""
+    style()
+    d = json.load(open(diag / "c3_c4_c5.json"))["C4_pooled"]
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.7), sharey=True)
+    names = {"yor": "Yoruba", "yor-stripped": "Yoruba, stripped", "swh": "Swahili", "hau": "Hausa", "hau-stripped": "Hausa, stripped"}
+    for ax, size in zip(axes, SIZES):
+        for cell, r in d[size].items():
+            t = np.array(r["pooled"]["top1"]) * 100
+            ax.plot(np.linspace(0, 1, len(t)), t, color=COL[cell], lw=1.8, label=names[cell])
+        ax.axhline(0.5, color=MUTED, lw=1)
+        ax.set_title(f"Qwen3-{size}", fontsize=10)
+        ax.set_xlabel("relative depth (0 = embeddings, 1 = output)")
+        ax.set_ylim(0, 100)
+    axes[0].set_ylabel("top-1 retrieval of the English counterpart (%)\n(grey line = chance, 0.5%)")
+    axes[0].legend(frameon=False, fontsize=8, loc="upper left")
+    fig.suptitle("Pooled-token alignment grows with size in every language and falls toward the output layers", x=0.01, ha="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out / "fig6_alignment_pooled.png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(root: Path, out: Path):
     out.mkdir(exist_ok=True, parents=True)
     runs, runs2 = load(root), load(root, "analysis_judge_second")
@@ -201,6 +223,8 @@ def main(root: Path, out: Path):
     fig4(runs, runs2, out)
     if (root / "diagnostics" / "c4_last_token.json").exists():
         fig5(root / "diagnostics", out)
+    if (root / "diagnostics" / "c3_c4_c5.json").exists():
+        fig6(root / "diagnostics", out)
     print("wrote", sorted(p.name for p in out.glob("fig*.png")))
 
 
