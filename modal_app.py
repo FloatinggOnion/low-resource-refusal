@@ -40,13 +40,36 @@ def c_and_h(model_id: str, tag: str, belebele_n: int | None = None, cells: str =
 
 
 @app.function(**common)
-def generate(model_id: str, tag: str, max_new_tokens: int = 1024, cells: str = "eng,yor,yor-stripped", sampling: str = "design") -> dict:
+def generate(model_id: str, tag: str, max_new_tokens: int = 1024, cells: str = "eng,yor,yor-stripped", sampling: str = "design", suffix: str = "") -> dict:
     import os
 
     from lrr.gen import run_generation
 
     os.makedirs(f"/out/{tag}", exist_ok=True)
-    s = run_generation(model_id, f"/out/{tag}/generations.jsonl", max_new_tokens=max_new_tokens, cells=tuple(cells.split(",")), sampling=sampling)
+    s = run_generation(model_id, f"/out/{tag}/generations.jsonl", max_new_tokens=max_new_tokens, cells=tuple(cells.split(",")), sampling=sampling, suffix=suffix)
+    out_vol.commit()
+    hf_vol.commit()
+    return s
+
+
+@app.function(**common)
+def lm_probe(model_id: str, tag: str, cells: str = "eng,yor,yor-stripped,swh,hau,hau-stripped") -> dict:
+    from lrr.lm_probe import run_lm_probe
+
+    s = run_lm_probe(model_id, f"/out/{tag}/lm", device="cuda", dtype="bfloat16", cells=tuple(cells.split(",")))
+    out_vol.commit()
+    hf_vol.commit()
+    return s
+
+
+@app.function(**common)
+def translate(model_id: str, tag: str) -> dict:
+    import os
+
+    from lrr.translate import run_translate
+
+    os.makedirs(f"/out/{tag}", exist_ok=True)
+    s = run_translate(model_id, f"/out/{tag}/translations.jsonl")
     out_vol.commit()
     hf_vol.commit()
     return s
@@ -66,7 +89,7 @@ def judge(tag: str, judge_id: str, prompt_field: str = "goal_en", name: str = "p
 @app.local_entrypoint()
 def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebele_n: int = 0,
          judge_id: str = JUDGE_DEFAULT, prompt_field: str = "goal_en", name: str = "primary",
-         cells: str = "eng,yor,yor-stripped", sampling: str = "design"):
+         cells: str = "eng,yor,yor-stripped", sampling: str = "design", suffix: str = ""):
     tag = tag or model.split("/")[-1]
     if stage == "ch":
         s = c_and_h.remote(model, tag, belebele_n or None, cells)
@@ -74,7 +97,12 @@ def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebel
                           "chosen_layer_by_fold": s["h"]["chosen_layer_by_fold"], "shuffle": s["h"]["shuffle_control"],
                           "surface": s["surface"], "seconds": s["meta"]["seconds"]}, indent=1, default=float))
     elif stage == "gen":
-        print(json.dumps(generate.remote(model, tag, cells=cells, sampling=sampling), indent=1))
+        print(json.dumps(generate.remote(model, tag, cells=cells, sampling=sampling, suffix=suffix), indent=1))
+    elif stage == "lm":
+        s = lm_probe.remote(model, tag)
+        print(json.dumps({"c3_bits_per_byte": s["c3_bits_per_byte"], "seconds": s["seconds"]}, indent=1))
+    elif stage == "translate":
+        print(json.dumps(translate.remote(model, tag), indent=1))
     elif stage == "judge":
         print(json.dumps(judge.remote(tag, judge_id, prompt_field, name), indent=1))
     else:

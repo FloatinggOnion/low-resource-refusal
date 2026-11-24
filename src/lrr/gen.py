@@ -20,7 +20,7 @@ from .probe import CELLS, cell_texts, chat_text
 SEED = 20261113
 
 
-def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: int = 3, max_model_len: int = 6144, cells=CELLS, sampling: str = "design") -> dict:
+def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: int = 3, max_model_len: int = 6144, cells=CELLS, sampling: str = "design", suffix: str = "") -> dict:
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
 
@@ -34,7 +34,7 @@ def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: 
         for kind in ("harm", "benign"):
             en = items["harm_en" if kind == "harm" else "benign_en"].tolist()
             for i, t in enumerate(texts[kind]):
-                jobs.append(dict(cell=cell, kind=kind, item_id=i, prompt=t, goal_en=en[i]))
+                jobs.append(dict(cell=cell, kind=kind, item_id=i, prompt=(t + "\n\n" + suffix) if suffix else t, goal_en=en[i], suffix=suffix))
     prompts = [chat_text(tok, j["prompt"]) for j in jobs]
 
     if sampling == "design":
@@ -42,6 +42,9 @@ def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: 
             "sampled": dict(n=k, temperature=0.7, top_p=0.9),
             "greedy": dict(n=1, temperature=0.0, top_p=1.0),
         }
+    elif sampling == "design_sampled":
+        # design setting, sampled only (used by the output-language intervention, PREREG Addendum C6)
+        settings = {"sampled": dict(n=k, temperature=0.7, top_p=0.9)}
     elif sampling == "antirep":
         # SENSITIVITY ONLY (PREREG Addendum B): tighter nucleus + top-k + presence penalty, to test whether the
         # repetitive Yoruba/Swahili/Hausa loops are a decoding artefact of the design setting.

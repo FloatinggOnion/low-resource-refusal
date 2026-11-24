@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .analysis import GRID, INK, INK2, LAB_COL, MUTED, SURF, style
+from .analysis import COL, GRID, INK, INK2, LAB_COL, MUTED, SURF, style
 
 SIZES = ("4B", "8B", "14B")
 RUNS = {"4B": ("Qwen3-4B", "Qwen3-4B-swh-hau"), "8B": ("Qwen3-8B", "Qwen3-8B-swh-hau"), "14B": ("Qwen3-14B", "Qwen3-14B-swh-hau")}
@@ -170,6 +170,28 @@ def fig4(runs1, runs2, out: Path):
     plt.close(fig)
 
 
+def fig5(diag: Path, out: Path):
+    """Cross-lingual retrieval by relative depth (last-token states; chance 0.5%)."""
+    style()
+    d = json.load(open(diag / "c4_last_token.json"))
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.7), sharey=True)
+    names = {"yor": "Yoruba", "yor-stripped": "Yoruba, stripped", "swh": "Swahili", "hau": "Hausa", "hau-stripped": "Hausa, stripped"}
+    for ax, size in zip(axes, SIZES):
+        for cell, r in d[size].items():
+            t = np.array(r["top1"]) * 100
+            ax.plot(np.linspace(0, 1, len(t)), t, color=COL[cell], lw=1.8, label=names[cell])
+        ax.axhline(0.5, color=MUTED, lw=1)
+        ax.set_title(f"Qwen3-{size}", fontsize=10)
+        ax.set_xlabel("relative depth (0 = embeddings, 1 = output)")
+        ax.set_ylim(0, 40)
+    axes[0].set_ylabel("top-1 retrieval of the English counterpart (%)\n(grey line = chance, 0.5%)")
+    axes[0].legend(frameon=False, fontsize=8, loc="upper left")
+    fig.suptitle("Cross-lingual alignment: Swahili aligns with English in the middle layers and more so with size; Yoruba and Hausa stay low", x=0.01, ha="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out / "fig5_alignment_by_layer.png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(root: Path, out: Path):
     out.mkdir(exist_ok=True, parents=True)
     runs, runs2 = load(root), load(root, "analysis_judge_second")
@@ -177,6 +199,8 @@ def main(root: Path, out: Path):
     fig2(runs, out)
     fig3(runs, out)
     fig4(runs, runs2, out)
+    if (root / "diagnostics" / "c4_last_token.json").exists():
+        fig5(root / "diagnostics", out)
     print("wrote", sorted(p.name for p in out.glob("fig*.png")))
 
 
