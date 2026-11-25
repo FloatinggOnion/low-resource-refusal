@@ -113,7 +113,9 @@ def fit_directions(model, tok, items) -> tuple[np.ndarray, dict]:
     return folds, out
 
 
-def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_tokens: int = 256, device: str = "cuda", dtype: str = "bfloat16") -> dict:
+def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_tokens: int = 256, device: str = "cuda", dtype: str = "bfloat16", kind: str = "harm") -> dict:
+    """kind="harm": the pre-registered C7 design. kind="benign": specificity control (POST HOC, PREREG Addendum C changelog):
+    the same vector added to the topic-matched benign twins, to tell a specific effect from a generic refusal switch."""
     t0 = time.time()
     model, tok = load_model(model_id, device, dtype)
     items = build_items()
@@ -123,19 +125,26 @@ def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_to
 
     def record(cell, condition, ids, texts, goals, results, meta):
         for i, (txt, fin), goal, u in zip(ids, results, goals, texts):
-            r = dict(cell=cell, kind="harm", item_id=int(i), setting=condition, sample_idx=0, prompt=u, goal_en=goal, response=txt, finish_reason=fin, model_id=model_id, **meta)
+            r = dict(cell=cell, kind=kind, item_id=int(i), setting=condition, sample_idx=0, prompt=u, goal_en=goal, response=txt, finish_reason=fin, model_id=model_id, **meta)
             r.update(output_flags(txt, fin))
             rows.append(r)
 
     for cell in cells:
-        texts = cell_texts(items, cell)["harm"]
-        goals = items["harm_en"].tolist()
+        texts = cell_texts(items, cell)[kind]
+        goals = items["harm_en" if kind == "harm" else "benign_en"].tolist()
         for f in (0, 1):
             ids = [i for i in range(100) if folds[i] == f]
             layer, v = dirs[f]
             sub_t, sub_g = [texts[i] for i in ids], [goals[i] for i in ids]
             conds = [("baseline", "none", {})]
-            if cell == "eng":
+            if kind == "benign":
+                cs = (1.5,) if cell == "eng" else (1.0, 1.5)
+                for c in cs:
+                    conds.append((f"add_c{c}", "add", dict(layer=layer, vec=c * v)))
+                if cell != "eng":
+                    rv = torch.randn(v.shape, generator=rng)
+                    conds.append(("rand_c1.5", "add", dict(layer=layer, vec=rv / rv.norm() * (1.5 * v).norm())))
+            elif cell == "eng":
                 conds.append(("ablate", "ablate", dict(direction=v)))
             else:
                 for c in coefs:

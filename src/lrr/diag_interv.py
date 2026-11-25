@@ -24,11 +24,11 @@ SIZES = ("4B", "8B", "14B")
 KEY = ["cell", "kind", "item_id", "setting", "sample_idx"]
 
 
-def load(root: Path, tag: str) -> pd.DataFrame:
+def load(root: Path, tag: str, kind: str = "harm") -> pd.DataFrame:
     g = pd.read_json(root / tag / "generations.jsonl", lines=True)
     j = pd.read_json(root / tag / "judge_primary.jsonl", lines=True)[KEY + ["label"]]
     m = g.merge(j, on=KEY, validate="1:1")
-    m = m[m.kind == "harm"].copy()
+    m = m[m.kind == kind].copy()
     m["degenerate"] = m.flag_empty | m.flag_repetitive
     m["english_like"] = m.english_stopword_share >= 0.25
     return m
@@ -71,6 +71,8 @@ def diff_ci(a: np.ndarray, b: np.ndarray, idx: np.ndarray) -> dict:
 def c6(root: Path, idx) -> dict:
     out = {}
     for size in SIZES:
+        if not (root / f"Qwen3-{size}-enans" / "judge_primary.jsonl").exists():
+            continue
         base = pd.concat([load(root, f"Qwen3-{size}").query("setting == 'sampled'"), load(root, f"Qwen3-{size}-swh-hau").query("setting == 'sampled' and cell != 'eng'")])
         suf = load(root, f"Qwen3-{size}-enans").query("setting == 'sampled'")
         out[size] = {}
@@ -106,6 +108,8 @@ def c6(root: Path, idx) -> dict:
 def c7(root: Path, idx) -> dict:
     out = {}
     for size in SIZES:
+        if not (root / f"Qwen3-{size}-steer" / "judge_primary.jsonl").exists():
+            continue
         m = load(root, f"Qwen3-{size}-steer")
         res = {}
         refused = lambda cell, cond: per_item(m[(m.cell == cell) & (m.setting == cond)], lambda x: (x.label == "Refused").mean())
@@ -128,12 +132,44 @@ def c7(root: Path, idx) -> dict:
     return out
 
 
+def c7_benign(root: Path, idx) -> dict:
+    """Specificity control (POST HOC): the same steering vector on the topic-matched benign twins. If benign prompts are
+    refused as much as harmful ones, the effect is a generic refusal switch, not evidence that harm was recognised."""
+    out = {}
+    for size in SIZES:
+        if not (root / f"Qwen3-{size}-steerbenign" / "judge_primary.jsonl").exists():
+            continue
+        mb = load(root, f"Qwen3-{size}-steerbenign", "benign")
+        mh = load(root, f"Qwen3-{size}-steer", "harm")
+        ref = lambda m, cell, cond: per_item(m[(m.cell == cell) & (m.setting == cond)], lambda x: (x.label == "Refused").mean())
+        res = {}
+        for cell in ("eng", "yor", "swh", "hau"):
+            row = {"benign_baseline": ci(ref(mb, cell, "baseline"), idx)}
+            for c in (1.0, 1.5):
+                cond = f"add_c{c}"
+                if not ((mb.cell == cell) & (mb.setting == cond)).any():
+                    continue
+                b_base, b_add = ref(mb, cell, "baseline"), ref(mb, cell, cond)
+                row[f"benign_{cond}"] = ci(b_add, idx)
+                row[f"benign_delta_{cond}"] = diff_ci(b_add, b_base, idx)
+                if cell != "eng":
+                    h_base, h_add = ref(mh, cell, "baseline"), ref(mh, cell, cond)
+                    row[f"harm_delta_{cond}"] = diff_ci(h_add, h_base, idx)
+                    row[f"harm_minus_benign_delta_{cond}"] = diff_ci(h_add - h_base, b_add - b_base, idx)
+            if cell != "eng" and ((mb.cell == cell) & (mb.setting == "rand_c1.5")).any():
+                row["benign_rand_c1.5"] = ci(ref(mb, cell, "rand_c1.5"), idx)
+            row["benign_degenerate_add_c1.5"] = float(mb[(mb.cell == cell) & (mb.setting == "add_c1.5")].degenerate.mean()) if ((mb.cell == cell) & (mb.setting == "add_c1.5")).any() else None
+            res[cell] = row
+        out[size] = res
+    return out
+
+
 def main(root: Path, outdir: Path):
     outdir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
     idx = rng.integers(0, 100, size=(B, 100))
     res = {}
-    for name, fn in (("C6", c6), ("C7", c7)):
+    for name, fn in (("C6", c6), ("C7", c7), ("C7_benign_control", c7_benign)):
         try:
             res[name] = fn(root, idx)
         except FileNotFoundError as e:
