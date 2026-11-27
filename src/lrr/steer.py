@@ -206,3 +206,51 @@ def run_steer_sweep(model_id: str, out_path: str, c: float = SWEEP_C, cells=("yo
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     return dict(rows=len(rows), seconds=time.time() - t0, layers=list(layers))
+
+
+DENSE_LAYERS = (19, 20, 21, 22, 23)
+DENSE_COEFS = (1.0, 1.5)
+
+
+def run_steer_dense(model_id: str, out_path: str, layers=DENSE_LAYERS, coefs=DENSE_COEFS, rand_layer: int = 21, rand_c: float = 1.5,
+                    cells=("yor", "swh", "hau"), max_new_tokens: int = 256, device: str = "cuda", dtype: str = "bfloat16") -> dict:
+    """PREREG Addendum E: dense replication around one layer. Same construction as run_steer_sweep (English difference of means
+    at each layer, cross-fitted, no layer selection) at several coefficients, plus an equal-norm random-direction control at
+    one layer. Settings: "L{layer}_add_c{c}" and "L{layer}_rand_c{c}" (no English rows for the random control)."""
+    t0 = time.time()
+    model, tok = load_model(model_id, device, dtype)
+    items = build_items()
+    t = cell_texts(items, "eng")
+    hh = last_token_states(model, tok, t["harm"])
+    hb = last_token_states(model, tok, t["benign"])
+    folds = make_folds(items)
+    rng = torch.Generator().manual_seed(SEED)
+    rows = []
+    jobs = [(layer, c, "add") for c in coefs for layer in layers] + [(rand_layer, rand_c, "rand")]
+    for layer, c, mode in jobs:
+        vecs = {}
+        for f in (0, 1):
+            v = torch.tensor(hh[folds != f][:, layer].mean(0) - hb[folds != f][:, layer].mean(0), dtype=torch.float32)
+            if mode == "rand":
+                rv = torch.randn(v.shape, generator=rng)
+                v = rv / rv.norm() * v.norm()
+            vecs[f] = v
+        for cell in (("eng",) if mode == "add" else ()) + tuple(cells):
+            for kind in (("benign",) if cell == "eng" else ("harm", "benign")):
+                texts = cell_texts(items, cell)[kind]
+                goals = items["harm_en" if kind == "harm" else "benign_en"].tolist()
+                for f in (0, 1):
+                    ids = [i for i in range(len(items)) if folds[i] == f]
+                    sub_t = [texts[i] for i in ids]
+                    with intervention(model, "add", layer=layer, vec=c * vecs[f]):
+                        res = generate_batch(model, tok, sub_t, max_new_tokens, bs=len(sub_t))
+                    for i, (txt, fin), u in zip(ids, res, sub_t):
+                        r = dict(cell=cell, kind=kind, item_id=int(i), setting=f"L{layer}_{mode}_c{c}", sample_idx=0, prompt=u, goal_en=goals[i],
+                                 response=txt, finish_reason=fin, model_id=model_id, fold=f, layer=layer, vec_norm=float(vecs[f].norm()))
+                        r.update(output_flags(txt, fin))
+                        rows.append(r)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return dict(rows=len(rows), seconds=time.time() - t0, jobs=[list(j) for j in jobs])

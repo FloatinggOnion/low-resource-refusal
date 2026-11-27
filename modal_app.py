@@ -89,6 +89,19 @@ def steer_sweep(model_id: str, tag: str) -> dict:
 
 
 @app.function(**common)
+def steer_dense(model_id: str, tag: str) -> dict:
+    import os
+
+    from lrr.steer import run_steer_dense
+
+    os.makedirs(f"/out/{tag}", exist_ok=True)
+    s = run_steer_dense(model_id, f"/out/{tag}/generations.jsonl")
+    out_vol.commit()
+    hf_vol.commit()
+    return s
+
+
+@app.function(**common)
 def translate(model_id: str, tag: str) -> dict:
     import os
 
@@ -133,6 +146,8 @@ def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebel
         print(json.dumps(steer.remote(model, tag, kind="benign"), indent=1))
     elif stage == "steer_sweep":
         print(json.dumps(steer_sweep.remote(model, tag), indent=1))
+    elif stage == "steer_dense":
+        print(json.dumps(steer_dense.remote(model, tag), indent=1))
     elif stage == "translate":
         print(json.dumps(translate.remote(model, tag), indent=1))
     elif stage == "judge":
