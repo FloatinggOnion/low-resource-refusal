@@ -106,3 +106,13 @@ def test_longest_run_rule_ignores_single_layer_peaks():
 
     assert longest_run_at_least([0.5, 0.9, 0.5, 0.6]) == 1
     assert longest_run_at_least([0.5, 0.71, 0.8, 0.7, 0.4]) == 3
+
+
+def test_replication_rule_needs_two_new_layers_and_an_adjacent_one():
+    from lrr.diag_interv import replication_rule
+
+    assert not replication_rule([])
+    assert not replication_rule([20])          # a single adjacent hit is not enough
+    assert not replication_rule([19, 23])      # two hits, none adjacent
+    assert replication_rule([20, 23])
+    assert replication_rule([19, 22])
