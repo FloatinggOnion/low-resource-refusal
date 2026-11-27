@@ -420,3 +420,45 @@ Design rows for `eng`, `swh`, `hau` come from the Swahili/Hausa runs and `yor` f
 | Qwen3-14B | yor | anti-repetition | 0.3% [0.0, 1.0] | 44.7% [38.7, 51.0] | 55.0% [48.7, 61.3] | 41% | 72% | +86.3 [+80.3, +92.0] |
 | Qwen3-14B | swh | anti-repetition | 2.3% [0.3, 5.3] | 59.3% [51.7, 66.7] | 38.4% [31.3, 45.7] | 9% | 62% | +84.3 [+77.7, +90.3] |
 | Qwen3-14B | hau | anti-repetition | 0.0% [0.0, 0.0] | 37.6% [31.3, 44.3] | 62.4% [55.7, 68.7] | 45% | 41% | +86.7 [+80.7, +92.3] |
+
+
+---
+
+# Addendum: where does the failure sit? Checks C1-C7, D and E (25-27 Nov 2026)
+
+Rules: `PREREG.md` Addenda C, D, E (each written before its run; outcome lines appended after). Numbers: `results/diagnostics/*.json` (aggregates only). Figures: `figures/fig5` to `fig8`. Same three models, cells and seed; primary judge only for C6, C7, D2 and E; one greedy sample per prompt, so expect run-to-run noise (see E).
+
+## Bottom line
+
+1. **The failure sits upstream of the refusal output.** A refusal can be driven in Yoruba and Hausa (4B: 83-84% Refused when steered), so the output side is reachable. What is missing is the harm signal reaching it.
+2. **The English harm direction does not transfer** to Yoruba, Hausa or Swahili at any layer (D1: no cell has cross-fold AUROC >= 0.70 over 3 consecutive layers; best single peak 0.73, 8B Swahili layer 1).
+3. **Steering with the English refusal direction is a generic refusal switch, not harm recognition.** It raises refusal on benign twins as much as on harmful prompts (harm-minus-benign change -7 to +5 points, all intervals include 0; English benign 5-8% to 54-87% Refused). This was a post hoc control, recorded in PREREG Addendum C.
+4. **One candidate harm-specific effect did not replicate.** Layer sweep (D2): 2 of 45 cells meet the pre-registered +10-point threshold, both 8B layer 21. Dense re-run at layers 19-23 (E): 0 of 4 new layers meet it, and the layer-21 flags flip on re-run. Counted as noise. The steering line is closed.
+5. **"Understands but does not act" is not supported anywhere it can be tested.** The only cell near that profile remains 14B Swahili, which still fails the pre-registered comprehension bar (see the previous addendum). H1 stays untested.
+
+## Checks
+
+| check | what it asks | result |
+|---|---|---|
+| C1 token fertility | do more tokens per word explain the gap? | The fertility effect vanishes once a lexical covariate is added (post hoc). |
+| C2 lexical baseline | is U1 comprehension real or word matching? | At 4B and 8B Yoruba and Hausa, U1 is at the lexical-matching level; Swahili is real. Shortcut-free residual gap +84 to +100. |
+| C3 bits per byte | is the language just harder to model? | 2.3-3.2x English, and it does not track comprehension. |
+| C4 alignment | do non-English prompts land near their English twins? | Pooled retrieval grows with size: Swahili 61% to 95%, Yoruba 13% to 35%, Hausa 18% to 35%. |
+| C5 translation (chrF) | can the model translate the prompt itself? | Swahili 31 to 51; Yoruba and Hausa 18-24. |
+| C6 answer in English | is it an output-language gate? | No. "Answer in English." leaves Refused at 0-9% (English 83-86%), removes loops, answers mostly off-topic. |
+| C7 refusal direction | does the switch exist, and is it triggered by harm? | Ablating the English direction drops English Refused by 42-51 points (validation passes). Adding it makes non-English refuse, but benign twins equally (item 3). |
+| D1 transfer by layer | does the English harm direction work at any layer? | No cell, any size. |
+| D2 layer sweep | is the steering effect harm-specific at some depth? | 2 of 45 cells, both 8B layer 21, unreplicated. |
+| E dense replication | does 8B layer 21 hold up? | No: 0 of 4 new layers, random direction does nothing, 16% of Yoruba harmful responses differ between runs. |
+
+## Caveats
+
+- 100 prompt pairs, reused across all checks; each comparison is a few dozen to 100 items.
+- No hand-labelled judge calibration; judge agreement is below the 0.6 gate (previous addendum), and C6, C7, D2 and E use one judge.
+- The English harm direction is partly lexical (shuffle control fires), so "no transfer" is a statement about this direction, not about all possible harm representations.
+- D2 compares 45 cells uncorrected; that is why a replication was required before counting any hit.
+- Generation is not deterministic across runs (see E), so single-cell flags near a threshold should not be over-read.
+
+## Files
+
+Aggregate results: `results/diagnostics/` (`c1_c2`, `c3_c4_c5`, `c4_last_token`, `c6_c7` [C6, C7, C7 benign control, D2, E], `h_layers` [D1], `h_curves_<size>`). Generations, judge labels and hidden states stay private (gitignored).
