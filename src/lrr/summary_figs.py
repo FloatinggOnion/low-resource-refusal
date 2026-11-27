@@ -240,6 +240,38 @@ def fig7(diag: Path, out: Path):
     plt.close(fig)
 
 
+def fig8(diag: Path, out: Path):
+    """Steering sweep (PREREG D2): harmful-minus-benign change in Refused by depth, per language."""
+    style()
+    d = json.load(open(diag / "c6_c7.json"))["D2_layer_sweep"]
+    n_layers = {"4B": 36, "8B": 36, "14B": 40}
+    names = {"yor": "Yoruba", "swh": "Swahili", "hau": "Hausa"}
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.7), sharey=True)
+    for ax, size in zip(axes, SIZES):
+        rows = list(d[size].values())
+        for k, cell in enumerate(("yor", "swh", "hau")):
+            x = np.array([r["layer"] / n_layers[size] for r in rows]) + (k - 1) * 0.012
+            y = np.array([r[cell]["harm_minus_benign"]["point"] for r in rows]) * 100
+            lo = np.array([r[cell]["harm_minus_benign"]["ci95"][0] for r in rows]) * 100
+            hi = np.array([r[cell]["harm_minus_benign"]["ci95"][1] for r in rows]) * 100
+            ax.errorbar(x, y, yerr=[y - lo, hi - y], color=COL[cell], lw=1.2, marker="o", ms=4, capsize=2, label=names[cell])
+        ax.axhline(0, color=MUTED, lw=1)
+        ax.axhline(10, color=MUTED, lw=1, ls="--")
+        ax.set_title(f"Qwen3-{size}", fontsize=10)
+        ax.set_xlabel("relative depth of the steered layer")
+        ax.set_xlim(0.15, 1.0)
+        ax.set_ylim(-35, 40)
+    axes[0].set_ylabel("harmful minus benign change in Refused (points)", fontsize=9)
+    h_, l_ = axes[0].get_legend_handles_labels()
+    h_.append(plt.Line2D([0], [0], color=MUTED, lw=1, ls="--"))
+    l_.append("+10 points: the pre-registered threshold")
+    fig.legend(h_, l_, frameon=False, fontsize=8, loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.06))
+    fig.suptitle("Steering at five depths: harmful and benign prompts shift together; one candidate (8B, 58% depth) is not replicated", x=0.01, ha="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out / "fig8_steering_by_layer.png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(root: Path, out: Path):
     out.mkdir(exist_ok=True, parents=True)
     runs, runs2 = load(root), load(root, "analysis_judge_second")
@@ -253,6 +285,8 @@ def main(root: Path, out: Path):
         fig6(root / "diagnostics", out)
     if (root / "diagnostics" / "h_layers.json").exists():
         fig7(root / "diagnostics", out)
+    if "D2_layer_sweep" in json.load(open(root / "diagnostics" / "c6_c7.json")):
+        fig8(root / "diagnostics", out)
     print("wrote", sorted(p.name for p in out.glob("fig*.png")))
 
 
