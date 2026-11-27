@@ -214,6 +214,32 @@ def fig6(diag: Path, out: Path):
     plt.close(fig)
 
 
+def fig7(diag: Path, out: Path):
+    """Transfer of the English harm direction by relative depth (PREREG D1, exploratory)."""
+    style()
+    d = json.load(open(diag / "h_layers.json"))
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.7), sharey=True)
+    names = {"eng": "English (held-out pairs)", "yor": "Yoruba", "swh": "Swahili", "hau": "Hausa"}
+    for ax, size in zip(axes, SIZES):
+        for cell in ("eng", "swh", "yor", "hau"):
+            t = np.array(d[size]["cells"][cell]["curve"])
+            ax.plot(np.linspace(0, 1, len(t)), t, color=COL[cell], lw=2.2 if cell == "eng" else 1.6, label=names[cell])
+        ax.axhspan(0.35, 0.65, color=GRID, alpha=0.45, lw=0)
+        ax.axhline(0.5, color=MUTED, lw=1)
+        ax.set_title(f"Qwen3-{size}", fontsize=10)
+        ax.set_xlabel("relative depth (0 = embeddings, 1 = output)")
+        ax.set_ylim(0.3, 1.0)
+    axes[0].set_ylabel("AUROC of the English direction")
+    h_, l_ = axes[0].get_legend_handles_labels()
+    h_.append(plt.Rectangle((0, 0), 1, 1, color=GRID, alpha=0.45, lw=0))
+    l_.append("0.35-0.65: where chance curves wander")
+    fig.legend(h_, l_, frameon=False, fontsize=8, loc="lower center", ncol=5, bbox_to_anchor=(0.5, -0.06))
+    fig.suptitle("The English harm direction separates harmful from benign English prompts from mid-depth on, and no non-English language at any layer", x=0.01, ha="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out / "fig7_transfer_by_layer.png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(root: Path, out: Path):
     out.mkdir(exist_ok=True, parents=True)
     runs, runs2 = load(root), load(root, "analysis_judge_second")
@@ -225,6 +251,8 @@ def main(root: Path, out: Path):
         fig5(root / "diagnostics", out)
     if (root / "diagnostics" / "c3_c4_c5.json").exists():
         fig6(root / "diagnostics", out)
+    if (root / "diagnostics" / "h_layers.json").exists():
+        fig7(root / "diagnostics", out)
     print("wrote", sorted(p.name for p in out.glob("fig*.png")))
 
 

@@ -92,3 +92,17 @@ def test_unknown_mode_raises(tiny):
     with pytest.raises(ValueError):
         with intervention(tiny, "bogus"):
             pass
+
+
+def test_sweep_layers_match_the_preregistered_indices():
+    from lrr.steer import sweep_layers
+
+    assert sweep_layers(36) == (9, 15, 21, 27, 33)
+    assert sweep_layers(40) == (10, 17, 23, 30, 37)
+
+
+def test_longest_run_rule_ignores_single_layer_peaks():
+    from lrr.diag_layers import longest_run_at_least
+
+    assert longest_run_at_least([0.5, 0.9, 0.5, 0.6]) == 1
+    assert longest_run_at_least([0.5, 0.71, 0.8, 0.7, 0.4]) == 3

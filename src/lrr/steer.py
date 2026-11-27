@@ -160,3 +160,49 @@ def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_to
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     return dict(rows=len(rows), seconds=time.time() - t0, layers={f: dirs[f][0] for f in dirs})
+
+
+SWEEP_C = 1.5
+SWEEP_DEPTHS = (0.25, 0.42, 0.58, 0.75, 0.92)
+
+
+def sweep_layers(n_decoder_layers: int) -> tuple[int, ...]:
+    """PREREG Addendum D2: hidden-state indices at 25/42/58/75/92% of depth (36 layers -> 9,15,21,27,33; 40 -> 10,17,23,30,37)."""
+    return tuple(int(round(n_decoder_layers * f)) for f in SWEEP_DEPTHS)
+
+
+def run_steer_sweep(model_id: str, out_path: str, c: float = SWEEP_C, cells=("yor", "swh", "hau"), max_new_tokens: int = 256,
+                    device: str = "cuda", dtype: str = "bfloat16") -> dict:
+    """PREREG Addendum D2. For each layer in sweep_layers: the English difference-of-means vector at that layer (cross-fitted
+    over the same two folds, no layer selection) is added at c x its raw size to English benign twins and, per cell, to
+    harmful prompts and benign twins. Setting = "L{layer}_add_c{c}". Unsteered baselines are reused from the C7 runs."""
+    t0 = time.time()
+    model, tok = load_model(model_id, device, dtype)
+    items = build_items()
+    t = cell_texts(items, "eng")
+    hh = last_token_states(model, tok, t["harm"])
+    hb = last_token_states(model, tok, t["benign"])
+    folds = make_folds(items)
+    layers = sweep_layers(len(_decoder_layers(model)))
+    rows = []
+    for layer in layers:
+        vecs = {f: torch.tensor(hh[folds != f][:, layer].mean(0) - hb[folds != f][:, layer].mean(0), dtype=torch.float32) for f in (0, 1)}
+        for cell in ("eng",) + tuple(cells):
+            for kind in (("benign",) if cell == "eng" else ("harm", "benign")):
+                texts = cell_texts(items, cell)[kind]
+                goals = items["harm_en" if kind == "harm" else "benign_en"].tolist()
+                for f in (0, 1):
+                    ids = [i for i in range(len(items)) if folds[i] == f]
+                    sub_t = [texts[i] for i in ids]
+                    with intervention(model, "add", layer=layer, vec=c * vecs[f]):
+                        res = generate_batch(model, tok, sub_t, max_new_tokens, bs=len(sub_t))
+                    for i, (txt, fin), u in zip(ids, res, sub_t):
+                        r = dict(cell=cell, kind=kind, item_id=int(i), setting=f"L{layer}_add_c{c}", sample_idx=0, prompt=u, goal_en=goals[i],
+                                 response=txt, finish_reason=fin, model_id=model_id, fold=f, layer=layer, vec_norm=float(vecs[f].norm()))
+                        r.update(output_flags(txt, fin))
+                        rows.append(r)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return dict(rows=len(rows), seconds=time.time() - t0, layers=list(layers))
