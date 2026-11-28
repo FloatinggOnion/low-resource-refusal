@@ -13,7 +13,7 @@ Question: when a small open-weight model under-refuses a harmful request in a lo
 ## Run
 ```bash
 uv sync
-uv run pytest -q                      # 58 tests; tests/test_data.py downloads the pinned datasets
+uv run pytest -q                      # tests/test_data.py downloads the pinned datasets
 PYTHONPATH=src modal run modal_app.py --model Qwen/Qwen3-4B --stage ch      # C and H
 PYTHONPATH=src modal run modal_app.py --model Qwen/Qwen3-4B --stage gen     # R: responses (private Volume)
 PYTHONPATH=src modal run modal_app.py --model Qwen/Qwen3-4B --stage judge   # R: labels
@@ -23,10 +23,12 @@ modal volume get lrr-outputs Qwen3-4B outputs/Qwen3-4B                      # fe
 PYTHONPATH=src uv run python -m lrr.analysis outputs/Qwen3-4B
 # failure-locus checks (Addenda C-E): stages lm, translate, steer, steer_benign, steer_sweep, steer_dense, then --stage judge on each tag
 PYTHONPATH=src modal run modal_app.py --model Qwen/Qwen3-8B --stage steer_dense --tag Qwen3-8B-dense
+# C7 correction: repeat with --stage steer_benign --tag Qwen3-8B-steerbenign-v2, and again for 14B
+PYTHONPATH=src modal run modal_app.py --model Qwen/Qwen3-8B --stage steer --tag Qwen3-8B-steer-v2 --h-summary outputs/Qwen3-8B/ch/summary.json
 PYTHONPATH=src uv run python -m lrr.diag_interv outputs outputs/diagnostics   # C6, C7, D2, E tables
 PYTHONPATH=src uv run python -m lrr.diag_layers outputs outputs/diagnostics   # D1
 ```
-Any `Qwen/Qwen3-*` id works unchanged (8B, 14B tested). Seed 20261113 everywhere; dataset revisions pinned in `data.py`; every run writes `summary.json` with versions, GPU and a code hash.
+The 4B, 8B and 14B checkpoints were tested. The global seed is 20261113. New generation runs derive each sample seed from its cell, prompt kind, item ID and sample index. Dataset revisions are pinned in `data.py`. C/H runs write `ch/summary.json` with versions, GPU and a code hash.
 
 ## Results
 [results.md](results.md) has the full write-up (pilot, Swahili/Hausa, decoding check, failure-locus checks C1-C7, D, E). Aggregate numbers behind the later checks are in `results/diagnostics/` (JSON, numbers only); figures in `figures/`.

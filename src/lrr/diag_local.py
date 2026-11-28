@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 
 from .data import build_items
@@ -83,7 +85,7 @@ def c2(root: Path, items: pd.DataFrame) -> dict:
                 acc = m.groupby("item_id").acc.mean().reindex(range(100)).to_numpy()
                 und = m.assign(u=(m.status == "understood")).groupby("item_id").u.mean().reindex(range(100)).to_numpy()
                 bc = b.groupby("item_id").baseline_correct.mean().reindex(range(100)).to_numpy()
-                wrong = bc < 0.5  # baseline wrong on (at least) one of the pair's two kinds -> treat as wrong
+                wrong = bc == 0  # baseline misses both members of the pair
                 def stat(ix):
                     w = wrong[ix]
                     return acc[ix].mean(), bc[ix].mean(), (acc[ix][w].mean() if w.any() else np.nan)
@@ -110,7 +112,8 @@ def c1(root: Path, items: pd.DataFrame) -> dict:
     eng = t[t.cell == "eng"].set_index(["kind", "item_id"]).content_tokens
     rng = np.random.default_rng(SEED)
     idx = rng.integers(0, 100, size=(B, 100))
-    out = {"fertility": {}, "coef": {}}
+    out = {"fertility": {}, "coef": {}, "penalty": {"type": "l2", "C": 1.0}}
+    draws = (2 * idx[:, :, None] + np.arange(2)).reshape(B, -1)
     for cell in TARGETS:
         texts = cell_texts(items, cell)
         words = {k: np.array([len(s.split()) for s in texts[k]]) for k in texts}
@@ -134,16 +137,37 @@ def c1(root: Path, items: pd.DataFrame) -> dict:
             z = lambda v: (v - v.mean()) / v.std()
             X2 = np.column_stack([z(fert), z(el)])            # pre-registered model
             X3 = np.column_stack([z(fert), z(el), z(lex)])    # POST HOC robustness: adds lexical similarity to the English source
-            def fit(X, rows, col=0):
+            def fit(X, rows):
                 if y[rows].min() == y[rows].max():
-                    return np.nan
-                return LogisticRegression(C=np.inf, max_iter=2000).fit(X[rows], y[rows]).coef_[0][col]
-            allrows = np.arange(len(y))
-            entry = dict(share_understood=float(y.mean()), n=int(len(y)))
-            for name, X, col in (("coef_per_sd_fertility", X2, 0), ("coef_fertility_with_lexsim", X3, 0), ("coef_lexsim", X3, 2)):
-                boots = np.array([fit(X, np.array([2 * i + j for i in ix for j in (0, 1)]), col) for ix in idx])
-                entry[name] = float(fit(X, allrows, col))
-                entry[name + "_ci95"] = [float(np.nanpercentile(boots, 2.5)), float(np.nanpercentile(boots, 97.5))]
+                    return None, "single_class"
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", ConvergenceWarning)
+                    try:
+                        coef = LogisticRegression(C=1.0, max_iter=2000).fit(X[rows], y[rows]).coef_[0]
+                    except ConvergenceWarning:
+                        return None, "nonconvergence"
+                return (coef, None) if np.isfinite(coef).all() else (None, "nonfinite")
+
+            minority_n = int(min(y.sum(), len(y) - y.sum()))
+            entry = dict(share_understood=float(y.mean()), n=len(y), minority_class_n=minority_n)
+            for X, columns in ((X2, {"coef_per_sd_fertility": 0}),
+                               (X3, {"coef_fertility_with_lexsim": 0, "coef_lexsim": 2})):
+                point, point_failure = fit(X, np.arange(len(y)))
+                failures = dict(single_class=0, nonconvergence=0, nonfinite=0)
+                boots = []
+                for rows in draws:
+                    coef, failure = fit(X, rows)
+                    if failure:
+                        failures[failure] += 1
+                    else:
+                        boots.append(coef)
+                reliable = point_failure is None and not sum(failures.values()) and minority_n > 5
+                intervals = np.percentile(boots, [2.5, 97.5], axis=0) if reliable else None
+                for name, col in columns.items():
+                    entry[name] = None if point is None else float(point[col])
+                    entry[name + "_ci95"] = intervals[:, col].tolist() if reliable else None
+                    entry[name + "_fit"] = dict(interval_reliable=reliable, point_failure=point_failure,
+                                                bootstrap_fits=B, bootstrap_failures=failures)
             entry["ci95"] = entry["coef_per_sd_fertility_ci95"]
             out["coef"][f"{size}|{cell}"] = entry
     return out
@@ -151,16 +175,21 @@ def c1(root: Path, items: pd.DataFrame) -> dict:
 
 def c2b(root: Path, items: pd.DataFrame) -> dict:
     """Residual gap (harmful prompts, English refusal minus target refusal) restricted to items the model understood
-    (U1, both orders) AND on which the trigram baseline is wrong: understanding that lexical matching cannot explain."""
+    (U1, both orders) AND on which this trigram baseline is wrong."""
     base = lexical_baseline(items)
     rng = np.random.default_rng(SEED)
     idx = rng.integers(0, 100, size=(B, 100))
     out = {}
     for size, (t_yor, t_sh) in SIZES.items():
-        pi = pd.concat([pd.read_csv(root / t_yor / "analysis" / "per_item.csv"), pd.read_csv(root / t_sh / "analysis" / "per_item.csv")])
-        eng = pi[(pi.cell == "eng") & (pi.kind == "harm")].drop_duplicates("item_id").set_index("item_id").sampled_r_Refused.reindex(range(100)).to_numpy()
+        runs = {tag: pd.read_csv(root / tag / "analysis" / "per_item.csv").query("kind == 'harm'")
+                .set_index(["cell", "item_id"]) for tag in (t_yor, t_sh)}
+        if any(not frame.index.is_unique for frame in runs.values()):
+            raise ValueError(f"duplicate C2b records for {size}")
         for cell in TARGETS:
-            g = pi[(pi.cell == cell) & (pi.kind == "harm")].set_index("item_id")
+            tag = t_yor if cell in YOR_CELLS else t_sh
+            pi = runs[tag]
+            eng = pi.loc["eng"].sampled_r_Refused.reindex(range(100)).to_numpy()
+            g = pi.loc[cell]
             tgt = g.sampled_r_Refused.reindex(range(100)).to_numpy()
             und = (g.u1_status.reindex(range(100)) == "understood").to_numpy()
             bw = ~base[(base.cell == cell) & (base.variant == "u1") & (base.kind == "harm")].set_index("item_id").baseline_correct.reindex(range(100)).to_numpy().astype(bool)
@@ -171,7 +200,7 @@ def c2b(root: Path, items: pd.DataFrame) -> dict:
             for name, mask in (("understood", und), ("understood_and_baseline_wrong", und & bw)):
                 pt = est(mask, np.arange(100))
                 bt = np.array([est(mask, ix) for ix in idx])
-                out[f"{size}|{cell}|{name}"] = dict(gap=None if np.isnan(pt) else float(pt), ci95=[float(np.nanpercentile(bt, 2.5)), float(np.nanpercentile(bt, 97.5))] if mask.any() else None, n_items=int(mask.sum()))
+                out[f"{size}|{cell}|{name}"] = dict(run=tag, gap=None if np.isnan(pt) else float(pt), ci95=[float(np.nanpercentile(bt, 2.5)), float(np.nanpercentile(bt, 97.5))] if mask.any() else None, n_items=int(mask.sum()))
     return out
 
 

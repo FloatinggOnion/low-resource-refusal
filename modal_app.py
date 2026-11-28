@@ -9,6 +9,7 @@ Fetch with:  modal volume get lrr-outputs /<tag> outputs/<tag>
 """
 
 import json
+from pathlib import Path
 
 import modal
 
@@ -63,13 +64,13 @@ def lm_probe(model_id: str, tag: str, cells: str = "eng,yor,yor-stripped,swh,hau
 
 
 @app.function(**common)
-def steer(model_id: str, tag: str, kind: str = "harm") -> dict:
+def steer(model_id: str, tag: str, kind: str = "harm", h_layers: tuple[int, int] | None = None) -> dict:
     import os
 
     from lrr.steer import run_steer
 
     os.makedirs(f"/out/{tag}", exist_ok=True)
-    s = run_steer(model_id, f"/out/{tag}/generations.jsonl", kind=kind)
+    s = run_steer(model_id, f"/out/{tag}/generations.jsonl", kind=kind, h_layers=h_layers)
     out_vol.commit()
     hf_vol.commit()
     return s
@@ -128,7 +129,7 @@ def judge(tag: str, judge_id: str, prompt_field: str = "goal_en", name: str = "p
 @app.local_entrypoint()
 def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebele_n: int = 0,
          judge_id: str = JUDGE_DEFAULT, prompt_field: str = "goal_en", name: str = "primary",
-         cells: str = "eng,yor,yor-stripped", sampling: str = "design", suffix: str = ""):
+         cells: str = "eng,yor,yor-stripped", sampling: str = "design", suffix: str = "", h_summary: str = ""):
     tag = tag or model.split("/")[-1]
     if stage == "ch":
         s = c_and_h.remote(model, tag, belebele_n or None, cells)
@@ -140,10 +141,16 @@ def main(model: str = "Qwen/Qwen3-4B", stage: str = "ch", tag: str = "", belebel
     elif stage == "lm":
         s = lm_probe.remote(model, tag)
         print(json.dumps({"c3_bits_per_byte": s["c3_bits_per_byte"], "seconds": s["seconds"]}, indent=1))
-    elif stage == "steer":
-        print(json.dumps(steer.remote(model, tag), indent=1))
-    elif stage == "steer_benign":
-        print(json.dumps(steer.remote(model, tag, kind="benign"), indent=1))
+    elif stage in ("steer", "steer_benign"):
+        layers = None
+        if h_summary:
+            summary = json.loads(Path(h_summary).read_text())
+            if summary["meta"]["model_id"] != model:
+                raise ValueError("H summary belongs to another model")
+            chosen = summary["h"]["chosen_layer_by_fold"]
+            layers = (chosen["0"], chosen["1"])
+        kind = "benign" if stage == "steer_benign" else "harm"
+        print(json.dumps(steer.remote(model, tag, kind=kind, h_layers=layers), indent=1))
     elif stage == "steer_sweep":
         print(json.dumps(steer_sweep.remote(model, tag), indent=1))
     elif stage == "steer_dense":

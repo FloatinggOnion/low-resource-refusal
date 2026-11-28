@@ -9,6 +9,7 @@ Raw responses are written as JSONL (private storage only).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -18,6 +19,11 @@ from .flags import output_flags
 from .probe import CELLS, cell_texts, chat_text
 
 SEED = 20261113
+
+
+def sample_seed(cell: str, kind: str, item_id: int, sample_idx: int) -> int:
+    key = f"{SEED}|{cell}|{kind}|{item_id}|{sample_idx}".encode()
+    return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") >> 1
 
 
 def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: int = 3, max_model_len: int = 6144, cells=CELLS, sampling: str = "design", suffix: str = "") -> dict:
@@ -55,15 +61,17 @@ def run_generation(model_id: str, out_path: str, max_new_tokens: int = 1024, k: 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         for name, kw in settings.items():
-            seeds = [SEED + idx for idx in range(len(prompts))]
-            sps = [SamplingParams(max_tokens=max_new_tokens, seed=s, **kw) for s in seeds]
-            outs = llm.generate(prompts, sps)
-            for j, s, o in zip(jobs, seeds, outs):
-                for si, c in enumerate(o.outputs):
-                    row = dict(**j, setting=name, sample_idx=si, response=c.text, finish_reason=c.finish_reason,
-                               n_out_tokens=len(c.token_ids), seed=s, temperature=kw["temperature"], top_p=kw["top_p"], top_k=kw.get("top_k"), presence_penalty=kw.get("presence_penalty", 0.0), sampling=sampling,
-                               max_new_tokens=max_new_tokens, model_id=model_id)
-                    row.update(output_flags(c.text, c.finish_reason))
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    n_rows += 1
+            params = {key: value for key, value in kw.items() if key != "n"}
+            requests = [(j, prompt, si, sample_seed(j["cell"], j["kind"], j["item_id"], si))
+                        for j, prompt in zip(jobs, prompts, strict=True) for si in range(kw["n"])]
+            sps = [SamplingParams(n=1, max_tokens=max_new_tokens, seed=s, **params) for _, _, _, s in requests]
+            outs = llm.generate([prompt for _, prompt, _, _ in requests], sps)
+            for (j, _, si, s), o in zip(requests, outs, strict=True):
+                c, = o.outputs
+                row = dict(**j, setting=name, sample_idx=si, response=c.text, finish_reason=c.finish_reason,
+                           n_out_tokens=len(c.token_ids), seed=s, temperature=kw["temperature"], top_p=kw["top_p"], top_k=kw.get("top_k"), presence_penalty=kw.get("presence_penalty", 0.0), sampling=sampling,
+                           max_new_tokens=max_new_tokens, model_id=model_id)
+                row.update(output_flags(c.text, c.finish_reason))
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                n_rows += 1
     return dict(rows=n_rows, seconds=time.time() - t0, settings=settings, max_new_tokens=max_new_tokens)

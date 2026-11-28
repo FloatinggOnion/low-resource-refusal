@@ -19,6 +19,70 @@ def pts(e):
     return f"{e['gap']*100:+.1f} [{e['ci95'][0]*100:+.1f}, {e['ci95'][1]*100:+.1f}] (n={e['n_items']})"
 
 
+def judge_agreement(root: Path, tag: str) -> list[dict]:
+    import pandas as pd
+
+    d = root / tag
+    key = ["cell", "kind", "item_id", "setting", "sample_idx"]
+    m = pd.read_json(d / "generations.jsonl", lines=True)
+    for judge in ("primary", "second"):
+        labels = pd.read_json(d / f"judge_{judge}.jsonl", lines=True)[key + ["label"]]
+        m = m.merge(labels.rename(columns={"label": judge}), on=key, how="left", validate="one_to_one")
+
+    def agreement(g):
+        primary_unparsed, second_unparsed = g.primary.eq("Unparsed"), g.second.eq("Unparsed")
+        primary_missing, second_missing = g.primary.isna(), g.second.isna()
+        paired = g.loc[~(primary_unparsed | second_unparsed | primary_missing | second_missing)]
+        labels = sorted(set(paired.primary) | set(paired.second))
+        expected = sum(paired.primary.eq(label).mean() * paired.second.eq(label).mean() for label in labels)
+        kappa = (paired.primary.eq(paired.second).mean() - expected) / (1 - expected) if len(paired) and expected < 1 else None
+        return dict(n=len(g), n_paired=len(paired), primary_unparsed=int(primary_unparsed.sum()),
+                    second_unparsed=int(second_unparsed.sum()), primary_missing=int(primary_missing.sum()),
+                    second_missing=int(second_missing.sum()), kappa=kappa)
+
+    def row(cell, kind, setting, g):
+        return dict(cell=cell, kind=kind, setting=setting, all=agreement(g),
+                    nondegenerate=agreement(g.loc[~(g.flag_empty | g.flag_repetitive)]))
+
+    rows = [row(cell, kind, setting, g) for (cell, kind, setting), g in m.groupby(["cell", "kind", "setting"])]
+    base = m.loc[~m.cell.str.endswith("-stripped")]
+    rows.extend(row(cell, "all", "all", g) for cell, g in base.groupby("cell"))
+    return rows
+
+
+def agreement_tables(root: Path, tags: list[str]) -> list[str]:
+    rows = [(tag, row) for tag in tags for row in judge_agreement(root, tag)]
+
+    def fmt(s):
+        kappa = "—" if s["kappa"] is None else f"{s['kappa']:.3f}"
+        missing = f" (missing {s['primary_missing']}/{s['second_missing']})" if s["primary_missing"] or s["second_missing"] else ""
+        return f"{kappa} / {s['n_paired']}/{s['n']} / {s['primary_unparsed']}/{s['second_unparsed']}{missing}"
+
+    out = []
+    sections = (
+        ("headline", "Judge agreement by language (sampled harmful prompts)",
+         "Each column shows κ / parsed pairs out of all responses / Unparsed (primary/second). The headline uses unstripped base-language cells. Human calibration is required before treating judge rates as validated."),
+        ("extra", "Supplementary judge agreement", ""),
+        ("pooled", "Supplementary all-task agreement by language",
+         "For comparison with the original gate check, these rows pool harmful and benign prompts and sampled and greedy decoding settings within each unstripped language."),
+    )
+    for section, title, note in sections:
+        out.extend(["\n### " + title, ""])
+        if note:
+            out.extend([note, ""])
+        out.extend(["| Run | Language cell | Prompt kind | Setting | All responses | Non-degenerate subset | All-response κ ≥ 0.6 |",
+                    "|---|---|---|---|---|---|---|"])
+        for tag, row in rows:
+            headline = "-" not in row["cell"] and row["kind"] == "harm" and row["setting"] == "sampled"
+            row_section = "pooled" if row["kind"] == "all" else ("headline" if headline else "extra")
+            if row_section != section:
+                continue
+            kappa = row["all"]["kappa"]
+            gate = "—" if kappa is None else ("Pass" if kappa >= 0.6 else "Fail")
+            out.append(f"| {tag} | {row['cell']} | {row['kind']} | {row['setting']} | {fmt(row['all'])} | {fmt(row['nondegenerate'])} | {gate} |")
+    return out
+
+
 def main(root: Path, tags: list[str]):
     res = {t: json.load(open(root / t / "analysis" / "results_numbers.json")) for t in tags}
     CELLS = tuple(next(iter(res.values())).get("cells", ("eng", "yor", "yor-stripped")))
@@ -94,8 +158,6 @@ def main(root: Path, tags: list[str]):
     # judge sensitivity: second judge (phi-4) where available
     have2 = [t for t in tags if (root / t / "analysis_judge_second" / "results_numbers.json").exists()]
     if have2:
-        import pandas as pd
-
         w("\n### Judge sensitivity: Mistral-Small-3.2-24B (primary) vs phi-4 (second), harmful prompts, sampled responses\n")
         w("| model | cell | Refused (primary) | Refused (phi-4) | Jailbroken (primary) | Jailbroken (phi-4) | Deflected (primary) | Deflected (phi-4) |")
         w("|---|---|---|---|---|---|---|---|")
@@ -111,24 +173,7 @@ def main(root: Path, tags: list[str]):
             for T in targets:
                 k1 = lambda rr, rule: pts(rr["R"]["gap"][f"harm | all_responses | {T} | {rule}"])
                 w(f"| {t} | {T} | {k1(res[t], 'raw (all items)')} | {k1(r2, 'raw (all items)')} | {k1(res[t], 'residual (U1 understood)')} | {k1(r2, 'residual (U1 understood)')} |")
-        w("\n| model | all responses: agreement / Cohen's kappa | non-degenerate responses: agreement / kappa | PREREG gate (kappa >= 0.6) |")
-        w("|---|---|---|---|")
-
-        def kappa(x, y):
-            labs = sorted(set(x) | set(y))
-            po = (x == y).mean()
-            pe = sum((x == l).mean() * (y == l).mean() for l in labs)
-            return (po - pe) / (1 - pe)
-
-        for t in have2:
-            g = pd.read_json(root / t / "generations.jsonl", lines=True)
-            a = pd.read_json(root / t / "judge_primary.jsonl", lines=True)
-            b = pd.read_json(root / t / "judge_second.jsonl", lines=True)
-            key = ["cell", "kind", "item_id", "setting", "sample_idx"]
-            m = g.merge(a[key + ["label"]], on=key).merge(b[key + ["label"]], on=key, suffixes=("_1", "_2"))
-            nd = m[~(m.flag_empty | m.flag_repetitive)]
-            k_all, k_nd = kappa(m.label_1, m.label_2), kappa(nd.label_1, nd.label_2)
-            w(f"| {t} | {(m.label_1 == m.label_2).mean():.3f} / {k_all:.2f} | {(nd.label_1 == nd.label_2).mean():.3f} / {k_nd:.2f} (n={len(nd)}) | {'met' if k_all >= 0.6 else 'not met'} |")
+        out.extend(agreement_tables(root, have2))
     print("\n".join(out))
 
 

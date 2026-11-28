@@ -4,10 +4,9 @@ Direction: the English difference-of-means vector (harmful minus benign English 
 template), at the layer chosen on English training data only, cross-fitted over the same two category-stratified
 folds as H: items in fold f use the direction and layer fitted on the pairs NOT in fold f.
 
-  (a) validation  : project the direction out of the residual stream (after the embeddings and after every decoder
-                    layer, all positions) on English harmful prompts. Counts as a refusal mediator only if Refused
-                    falls by >= 30 points.
-  (b) steering    : add c x (raw difference-of-means vector) to the output of the chosen layer at all positions, for
+  (a) validation  : project the direction out after embeddings, each decoder layer and final normalization at all
+                    positions on English harmful prompts. The registered rule requires a >= 30-point Refused drop.
+  (b) steering    : add c x (raw difference-of-means vector) at the chosen hidden-state site at all positions, for
                     c in {0.5, 1, 1.5}, on Yoruba, Swahili and Hausa harmful prompts; equal-norm random-direction
                     controls. Greedy, one sample per prompt, 256 new tokens.
 Responses are written as JSONL (private storage) in the same format the judge reads (setting = condition).
@@ -48,8 +47,8 @@ def _apply(output, fn):
 @contextlib.contextmanager
 def intervention(model, mode: str, layer: int | None = None, vec: torch.Tensor | None = None, direction: torch.Tensor | None = None):
     """mode 'none' | 'add' | 'ablate'.
-    add    : output of decoder layer `layer - 1` (= hidden state index `layer`) += vec, at every position.
-    ablate : x <- x - (x . r) r for r = unit(direction), after the embeddings and after every decoder layer."""
+    add    : add vec at the corresponding HF hidden-state site, at every position.
+    ablate : remove the direction after embeddings, decoder layers, and final norm."""
     handles = []
     if mode == "add":
         v = vec
@@ -57,7 +56,16 @@ def intervention(model, mode: str, layer: int | None = None, vec: torch.Tensor |
         def add_hook(_m, _i, out):
             return _apply(out, lambda h: h + v.to(h.dtype).to(h.device))
 
-        handles.append(_decoder_layers(model)[layer - 1].register_forward_hook(add_hook))
+        layers = _decoder_layers(model)
+        if layer is None or not 0 <= layer <= len(layers):
+            raise ValueError(f"invalid hidden-state index: {layer}")
+        if layer == 0:
+            site = model.model.embed_tokens
+        elif layer == len(layers):
+            site = model.model.norm
+        else:
+            site = layers[layer - 1]
+        handles.append(site.register_forward_hook(add_hook))
     elif mode == "ablate":
         r = direction / direction.norm()
 
@@ -68,6 +76,7 @@ def intervention(model, mode: str, layer: int | None = None, vec: torch.Tensor |
         handles.append(model.model.embed_tokens.register_forward_hook(lambda _m, _i, out: proj(out)))
         for layer_mod in _decoder_layers(model):
             handles.append(layer_mod.register_forward_hook(lambda _m, _i, out: _apply(out, proj)))
+        handles.append(model.model.norm.register_forward_hook(lambda _m, _i, out: proj(out)))
     elif mode != "none":
         raise ValueError(mode)
     try:
@@ -96,7 +105,7 @@ def generate_batch(model, tok, user_texts: list[str], max_new_tokens: int = 256,
     return out  # type: ignore[return-value]
 
 
-def fit_directions(model, tok, items) -> tuple[np.ndarray, dict]:
+def fit_directions(model, tok, items, h_layers: tuple[int, int] | None = None) -> tuple[np.ndarray, dict]:
     """Cross-fitted English directions. Returns (folds, {fold f: (layer, vec as float32 tensor)}), where the entry for
     f is fitted on the pairs NOT in fold f and is applied to items of fold f."""
     t = cell_texts(items, "eng")
@@ -107,19 +116,25 @@ def fit_directions(model, tok, items) -> tuple[np.ndarray, dict]:
     out = {}
     for f in (0, 1):
         tr = folds != f
-        layer, _, _ = select_layer(hh[tr], hb[tr], cats[tr], f"{SEED}|steer|{f}")
+        if h_layers is None:
+            layer, _, _ = select_layer(hh[tr], hb[tr], cats[tr], f"{SEED}|inner|{f}")
+        else:
+            layer = h_layers[f]
+        if not 0 <= layer < hh.shape[1]:
+            raise ValueError(f"invalid H hidden-state index for fold {f}: {layer}")
         v = hh[tr][:, layer].mean(0) - hb[tr][:, layer].mean(0)
         out[f] = (int(layer), torch.tensor(v, dtype=torch.float32))
     return folds, out
 
 
-def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_tokens: int = 256, device: str = "cuda", dtype: str = "bfloat16", kind: str = "harm") -> dict:
+def run_steer(model_id: str, out_path: str, cells=CELLS, coefs=COEFS, max_new_tokens: int = 256, device: str = "cuda", dtype: str = "bfloat16", kind: str = "harm",
+              h_layers: tuple[int, int] | None = None) -> dict:
     """kind="harm": the pre-registered C7 design. kind="benign": specificity control (POST HOC, PREREG Addendum C changelog):
     the same vector added to the topic-matched benign twins, to tell a specific effect from a generic refusal switch."""
     t0 = time.time()
     model, tok = load_model(model_id, device, dtype)
     items = build_items()
-    folds, dirs = fit_directions(model, tok, items)
+    folds, dirs = fit_directions(model, tok, items, h_layers)
     rng = torch.Generator().manual_seed(SEED)
     rows = []
 

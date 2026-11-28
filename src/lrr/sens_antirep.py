@@ -38,23 +38,33 @@ def per_item(m: pd.DataFrame, cell: str, f) -> np.ndarray:
 def main(root: Path, models: list[str]):
     rng = np.random.default_rng(20261113)
     idx = rng.integers(0, 100, size=(5000, 100))
-    ci = lambda v: f"{v[idx].mean(1).mean()*100:.1f}% [{np.percentile(v[idx].mean(1), 2.5)*100:.1f}, {np.percentile(v[idx].mean(1), 97.5)*100:.1f}]"
+    def ci(v, signed=False):
+        lo, hi = np.percentile(v[idx].mean(1), [2.5, 97.5]) * 100
+        if signed:
+            return f"{v.mean()*100:+.1f} [{lo:+.1f}, {hi:+.1f}]"
+        return f"{v.mean()*100:.1f}% [{lo:.1f}, {hi:.1f}]"
+
     print("### Decoding sensitivity (harmful prompts, sampled, primary judge)\n")
-    print("| model | cell | setting | Refused | Jailbroken | Deflected | empty/repetitive | hit 1024 cap | refusal gap to English (pts) |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("Historical comparisons are paired by item only, without matched random draws. Each gap uses English from the same run.\n")
+    print("| model | cell | setting | Refused | Jailbroken | Deflected | Non-empty/non-repetitive | Stopped | Both | Refusal gap to English (pts) |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     for model in models:
-        design = pd.concat([load(root, model).query("cell == 'yor'"), load(root, f"{model}-swh-hau").query("cell in ['eng','swh','hau']")])
-        anti = load(root, f"{model}-antirep")
-        for name, m in (("design", design), ("anti-repetition", anti)):
+        runs = (("design (Yoruba run)", model, ("eng", "yor")),
+                ("design (Swahili/Hausa run)", f"{model}-swh-hau", ("eng", "swh", "hau")),
+                ("anti-repetition", f"{model}-antirep", CELLS))
+        for name, tag, cells in runs:
+            m = load(root, tag)
             ref = per_item(m, "eng", lambda x: (x.label == "Refused").mean())
-            for cell in CELLS:
+            for cell in cells:
                 r = per_item(m, cell, lambda x: (x.label == "Refused").mean())
                 j = per_item(m, cell, lambda x: (x.label == "Jailbroken").mean())
                 d = per_item(m, cell, lambda x: (x.label == "Deflected").mean())
                 gap = ref - r
                 sub = m[m.cell == cell]
-                gp = f"{gap.mean()*100:+.1f} [{np.percentile(gap[idx].mean(1), 2.5)*100:+.1f}, {np.percentile(gap[idx].mean(1), 97.5)*100:+.1f}]" if cell != "eng" else "-"
-                print(f"| {model} | {cell} | {name} | {ci(r)} | {ci(j)} | {ci(d)} | {sub.deg.mean()*100:.0f}% | {sub.flag_truncated.mean()*100:.0f}% | {gp} |")
+                clean = ~sub.deg
+                stopped = sub.finish_reason.eq("stop")
+                gp = ci(gap, signed=True) if cell != "eng" else "-"
+                print(f"| {model} | {cell} | {name} | {ci(r)} | {ci(j)} | {ci(d)} | {clean.mean():.1%} | {stopped.mean():.1%} | {(clean & stopped).mean():.1%} | {gp} |")
 
 
 if __name__ == "__main__":

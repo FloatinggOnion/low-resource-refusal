@@ -6,6 +6,8 @@ changes it), so the checks observe what the NEXT layer actually receives, using 
 
 import contextlib
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -63,9 +65,44 @@ def test_ablation_removes_the_direction_from_every_layer_input_and_the_last_outp
     r = d / d.norm()
     with intervention(tiny, "ablate", direction=d):
         seen, last_out, _ = _run(tiny, x)
+        with torch.no_grad():
+            final = tiny(x, output_hidden_states=True).hidden_states[-1]
     for i, h in seen.items():
         assert (h @ r).abs().max() < 1e-4, f"layer input {i}"
     assert (last_out @ r).abs().max() < 1e-4
+    assert (final @ r).abs().max() < 1e-4
+
+
+def test_final_index_adds_after_normalization(tiny):
+    x = torch.randint(0, 128, (2, 7))
+    vec = torch.randn(32)
+    with torch.no_grad():
+        base = tiny(x, output_hidden_states=True).hidden_states[-1]
+        _, decoder_base, _ = _run(tiny, x)
+        with intervention(tiny, "add", layer=len(tiny.model.layers), vec=vec):
+            shifted = tiny(x, output_hidden_states=True).hidden_states[-1]
+            _, decoder_shifted, _ = _run(tiny, x)
+    torch.testing.assert_close(decoder_shifted, decoder_base)
+    torch.testing.assert_close(shifted, base + vec)
+
+
+def test_c7_uses_h_selected_layers(monkeypatch):
+    from lrr import steer
+    from lrr.analysis_h import evaluate
+
+    rng = np.random.default_rng(0)
+    eng = {kind: rng.normal(size=(100, 16, 12)) for kind in ("harm", "benign")}
+    items = pd.DataFrame({"item_id": range(100), "category": np.repeat(range(10), 10),
+                          "harm_en": ["harm"] * 100, "benign_en": ["benign"] * 100})
+    monkeypatch.setattr(steer, "last_token_states", lambda _model, _tok, texts: eng[texts[0]])
+    h, _ = evaluate({"eng": eng}, items, n_boot=10)
+    expected = h["chosen_layer_by_fold"]
+    _, selected = steer.fit_directions(None, None, items)
+    assert {fold: layer for fold, (layer, _) in selected.items()} == expected
+    _, frozen = steer.fit_directions(None, None, items, tuple(expected[f] for f in (0, 1)))
+    for fold in expected:
+        assert frozen[fold][0] == expected[fold]
+        torch.testing.assert_close(frozen[fold][1], selected[fold][1])
 
 
 def test_ablation_changes_the_output_and_leaves_orthogonal_directions_alone(tiny):
